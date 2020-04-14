@@ -1,6 +1,19 @@
+alterState((state) => {
+  const deaths = state.data.form.household_deaths.deaths;
+  if (!Array.isArray(deaths)) {
+    state.data.form.household_deaths.deaths = [deaths];
+  }
+
+  return state;
+});
+
 upsert("Household__c","CommCare_Code__c",fields(
   field("CommCare_Code__c",dataValue("form.case.@case_id")),
-  field("MOH_household_code__c", dataValue("form.Household_Information.moh_code")),
+  field("MOH_household_code__c", (state)=>{
+    var moh = dataValue("form.Household_Information.moh_code")(state);
+    var mohLinked = dataValue("form.MOH_household_code_linked")(state);
+    return (moh ? moh : mohLinked);
+  }),
   field("Active_Household__c", (state)=>{
     var status = dataValue("form.Household_Status")(state)
     return (status=="Yes"? true : false);
@@ -29,7 +42,7 @@ upsert("Household__c","CommCare_Code__c",fields(
 upsert("Visit__c","CommCare_Visit_ID__c", fields(
   field("CommCare_Visit_ID__c", dataValue("id")),
   relationship("Household__r","CommCare_Code__c",dataValue("form.case.@case_id")),
-  field("Date__c",dataValue("form.metadata.timeEnd")),
+  field("Date__c",dataValue("metadata.timeEnd")),
   //field("Household_CHW__c", "a031x000002S9lm"), //Hardcoded for sandbox testing
   field("Household_CHW__c",dataValue("form.chw")),
   field("Name", "CHW Visit"),
@@ -41,3 +54,55 @@ upsert("Visit__c","CommCare_Visit_ID__c", fields(
     }
   })
 ));
+
+//New logic to insert child Person records if person is marked as deceased in HH form
+each(
+  merge(
+    dataPath("$.form.household_deaths.deaths[*]"),
+    fields(
+      field("caseId", dataValue("form.case.@case_id")),
+      field("catchment", dataValue("form.catchment")),
+      field("Date", dataValue("form.Date"))
+    )
+  ),
+  upsert("Person__c", "CommCare_ID__c", fields(
+    field("CommCare_ID__c", (state) => {
+      var age = dataValue("age_dead")(state)
+      return `${state.data.caseId}${age}`;
+    }),
+    field("CommCare_HH_Code__c", dataValue("caseId")),
+    relationship("RecordType", "Name", (state) => {
+      var age = dataValue("age_dead")(state)
+      var gender = dataValue("gender_dead")(state)
+      var rt = '';
+      if (age < 5) {
+         rt = "Child";
+      } else if (age < 18) {
+         rt = "Youth";
+        //Youth
+      } else if (gender === "female") {
+         rt = "Female Adult";
+      } else {
+         rt = "Male Adult";
+      }
+      return rt;
+    }),
+    field("Name", "Deceased Person"),
+    field("Source__c", true),
+    relationship("Catchment__r", "Name", dataValue("catchment")),
+    field("Client_Status__c", "Deceased"),
+    field("Dead_age__c", dataValue("age_dead")),
+    field("Cause_of_Death__c", (state) => {
+      var cause = dataValue("cause_of_death_dead")(state);
+      return (cause !== undefined ? cause.toString().replace(/_/g, " ") : null);
+    }),
+    field("Verbal_autopsy__c", dataValue("verbal_autopsy")),
+    field("Client_Status__c", "Deceased"),
+    field("Active_in_Thrive_Thru_5__c", "No"),
+    field("Active_in_HAWI__c", "No"),
+    field("Active_TT5_Mother__c", "No"),
+    field("TT5_Mother_Registrant__c", "No"),
+    field("Date_of_Death__c", dataValue("Date")),
+    field("Inactive_Date__c", dataValue("Date"))
+  ))
+);
